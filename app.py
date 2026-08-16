@@ -11,48 +11,54 @@ st.title("🧠 Neural Network Inspector & Evaluation Dashboard")
 
 model_file = st.sidebar.file_uploader("Upload Model (.pkl / .pt)", type=["pkl", "pt"])
 
-# Custom Unpickler to handle PyTorch persistent storage IDs safely
-class TorchCPUUnpickler(pickle.Unpickler):
+# Custom Unpickler to handle legacy PyTorch storage classes
+class SafeUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
-        if module == 'torch.storage' and name == '_load_from_bytes':
-            return lambda b: torch.load(io.BytesIO(b), map_location='cpu', weights_only=False)
-        return super().find_class(module, name)
+        if module.startswith('torch.storage'):
+            return getattr(torch.storage, name, None) or object
+        try:
+            return super().find_class(module, name)
+        except Exception:
+            # Fallback dummy class to prevent crashes on custom classes (e.g., MONAI/Lightning wrappers)
+            return type(name, (object,), {})
 
 def load_checkpoint_file(uploaded_file):
-    # 1. Read entire binary buffer into memory
     file_bytes = uploaded_file.read()
     uploaded_file.seek(0)
     
-    # Attempt A: Standard PyTorch load with weights_only=False
+    # Attempt 1: Standard torch.load with weights_only=False
     try:
         buffer = io.BytesIO(file_bytes)
         return torch.load(buffer, map_location="cpu", weights_only=False)
     except Exception:
         pass
 
-    # Attempt B: Custom PyTorch Unpickler for persistent ID handles
+    # Attempt 2: SafeUnpickler for custom storage handlers
     try:
         buffer = io.BytesIO(file_bytes)
-        return TorchCPUUnpickler(buffer).load()
+        return SafeUnpickler(buffer).load()
     except Exception:
         pass
 
-    # Attempt C: Handle ZIP container formats (PyTorch modern state dicts)
+    # Attempt 3: ZIP container parser for modern PyTorch checkpoints
     buffer = io.BytesIO(file_bytes)
     if zipfile.is_zipfile(buffer):
         buffer.seek(0)
         with zipfile.ZipFile(buffer, 'r') as z:
             for filename in z.namelist():
-                if filename.endswith('.pkl') or filename.endswith('data.pkl'):
+                if filename.endswith('.pkl') or filename.endswith('data.pkl') or 'pkl' in filename:
                     with z.open(filename) as f:
-                        return TorchCPUUnpickler(f).load()
+                        try:
+                            return SafeUnpickler(f).load()
+                        except Exception:
+                            pass
 
-    # Attempt D: Plain Python unpickling
+    # Attempt 4: Standard torch.load default
     try:
         buffer = io.BytesIO(file_bytes)
-        return pickle.load(buffer)
+        return torch.load(buffer, map_location="cpu")
     except Exception as final_err:
-        raise ValueError(f"Could not parse checkpoint file: {final_err}")
+        raise ValueError(f"Could not parse checkpoint structure: {final_err}")
 
 if model_file is not None:
     try:
@@ -61,7 +67,7 @@ if model_file is not None:
         st.error(f"Failed to load checkpoint: {e}")
         st.stop()
 
-    # Unwrap nested state dicts if wrapped inside a dictionary
+    # Unwrap nested state dict structures if needed
     if isinstance(state_dict, dict):
         for key in ["state_dict", "model", "net", "weights"]:
             if key in state_dict and isinstance(state_dict[key], dict):
@@ -109,7 +115,7 @@ if model_file is not None:
                 st.write(f"### Weight Distribution for `{selected_layer}`")
                 st.bar_chart(np.histogram(tensor_vals, bins=50)[0])
         else:
-            st.warning("No tensor weights found in the dictionary structure.")
+            st.warning("No PyTorch tensors were found in the uploaded file.")
 
     # --- TAB 2: EVALUATION RESULTS ---
     with tab2:
