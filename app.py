@@ -3,34 +3,66 @@ import pickle
 import torch
 import numpy as np
 import pandas as pd
+import io
+import zipfile
 
 st.set_page_config(page_title="Model Evaluation & Weights Dashboard", layout="wide")
 st.title("🧠 Neural Network Inspector & Evaluation Dashboard")
 
 model_file = st.sidebar.file_uploader("Upload Model (.pkl / .pt)", type=["pkl", "pt"])
 
-if model_file is not None:
-    # ---------------------------------------------------------
-    # Safe Loading Logic for PyTorch 2.6+
-    # ---------------------------------------------------------
-    model_file.seek(0)
+def load_pytorch_file(uploaded_file):
+    # Read entire binary buffer into memory to prevent pointer stream errors
+    file_bytes = uploaded_file.read()
+    uploaded_file.seek(0)
+    
+    buffer = io.BytesIO(file_bytes)
+    
+    # Attempt 1: Standard PyTorch deserialization
     try:
-        # Pass weights_only=False to allow parsing standard pickled state dicts
-        state_dict = torch.load(model_file, map_location="cpu", weights_only=False)
-    except Exception as e:
-        # Fallback reset buffer and try standard unpickling
-        model_file.seek(0)
-        try:
-            state_dict = pickle.load(model_file)
-        except Exception as pickle_err:
-            st.error(f"Failed to load model checkpoint: {pickle_err}")
-            st.stop()
+        return torch.load(buffer, map_location="cpu", weights_only=False)
+    except Exception:
+        pass
 
-    # Extract state_dict if checkpoint was saved as a nested dict (e.g. {'model': state_dict})
-    if isinstance(state_dict, dict) and "state_dict" in state_dict:
-        state_dict = state_dict["state_dict"]
-    elif isinstance(state_dict, dict) and "model" in state_dict:
-        state_dict = state_dict["model"]
+    # Attempt 2: PyTorch with strict weights_only disabled on fresh buffer
+    buffer.seek(0)
+    try:
+        return torch.load(buffer, map_location="cpu")
+    except Exception:
+        pass
+
+    # Attempt 3: If saved directly with standard Python `pickle`
+    buffer.seek(0)
+    try:
+        return pickle.load(buffer)
+    except Exception:
+        pass
+
+    # Attempt 4: If saved inside a Zip archive format
+    buffer.seek(0)
+    if zipfile.is_zipfile(buffer):
+        buffer.seek(0)
+        with zipfile.ZipFile(buffer, 'r') as z:
+            for filename in z.namelist():
+                if filename.endswith('.pkl') or filename.endswith('data.pkl') or 'pkl' in filename:
+                    with z.open(filename) as f:
+                        return pickle.load(f)
+
+    raise ValueError("Could not parse file. Ensure it is a valid PyTorch model checkpoint or pickled state_dict.")
+
+if model_file is not None:
+    try:
+        state_dict = load_pytorch_file(model_file)
+    except Exception as e:
+        st.error(f"Failed to load checkpoint: {e}")
+        st.stop()
+
+    # Unwrap nested state dicts if the file wraps weights (e.g., checkpoint['state_dict'])
+    if isinstance(state_dict, dict):
+        for key in ["state_dict", "model", "net", "weights"]:
+            if key in state_dict and isinstance(state_dict[key], dict):
+                state_dict = state_dict[key]
+                break
 
     st.sidebar.success("Model loaded successfully!")
     
@@ -73,7 +105,7 @@ if model_file is not None:
                 st.write(f"### Weight Distribution for `{selected_layer}`")
                 st.bar_chart(np.histogram(tensor_vals, bins=50)[0])
         else:
-            st.warning("No PyTorch tensors were found in the uploaded file.")
+            st.warning("No tensor weights found. Ensure the uploaded pickle file contains standard PyTorch parameter maps.")
 
     # --- TAB 2: EVALUATION RESULTS ---
     with tab2:
