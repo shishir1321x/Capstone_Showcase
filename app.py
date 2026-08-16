@@ -11,7 +11,7 @@ model_file = st.sidebar.file_uploader("Upload Model (.pkl / .pt)", type=["pkl", 
 
 if model_file is not None:
     # Load model weights safely
-    state_dict = torch.load(model_file, map_location="cpu") if hasattr(torch, "load") else pickle.load(model_file)
+    state_dict = torch.load(model_file, map_location="cpu", weights_only=False) if hasattr(torch, "load") else pickle.load(model_file)
     st.sidebar.success("Model loaded successfully!")
     
     tab1, tab2 = st.tabs(["🏗️ Architecture & Weights", "📊 Evaluation Metrics & Visuals"])
