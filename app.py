@@ -10,8 +10,28 @@ st.title("🧠 Neural Network Inspector & Evaluation Dashboard")
 model_file = st.sidebar.file_uploader("Upload Model (.pkl / .pt)", type=["pkl", "pt"])
 
 if model_file is not None:
-    # Load model weights safely
-    state_dict = torch.load(model_file, map_location="cpu", weights_only=False) if hasattr(torch, "load") else pickle.load(model_file)
+    # ---------------------------------------------------------
+    # Safe Loading Logic for PyTorch 2.6+
+    # ---------------------------------------------------------
+    model_file.seek(0)
+    try:
+        # Pass weights_only=False to allow parsing standard pickled state dicts
+        state_dict = torch.load(model_file, map_location="cpu", weights_only=False)
+    except Exception as e:
+        # Fallback reset buffer and try standard unpickling
+        model_file.seek(0)
+        try:
+            state_dict = pickle.load(model_file)
+        except Exception as pickle_err:
+            st.error(f"Failed to load model checkpoint: {pickle_err}")
+            st.stop()
+
+    # Extract state_dict if checkpoint was saved as a nested dict (e.g. {'model': state_dict})
+    if isinstance(state_dict, dict) and "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+    elif isinstance(state_dict, dict) and "model" in state_dict:
+        state_dict = state_dict["model"]
+
     st.sidebar.success("Model loaded successfully!")
     
     tab1, tab2 = st.tabs(["🏗️ Architecture & Weights", "📊 Evaluation Metrics & Visuals"])
@@ -23,18 +43,19 @@ if model_file is not None:
         layers_data = []
         total_params = 0
         
-        for name, tensor in state_dict.items():
-            if isinstance(tensor, torch.Tensor):
-                numel = tensor.numel()
-                total_params += numel
-                layers_data.append({
-                    "Layer": name,
-                    "Shape": str(list(tensor.shape)),
-                    "Parameters": numel,
-                    "Mean": float(tensor.mean()),
-                    "Std": float(tensor.std()),
-                    "Sparsity (%)": float((tensor == 0).sum() / numel * 100)
-                })
+        if isinstance(state_dict, dict):
+            for name, tensor in state_dict.items():
+                if isinstance(tensor, torch.Tensor):
+                    numel = tensor.numel()
+                    total_params += numel
+                    layers_data.append({
+                        "Layer": name,
+                        "Shape": str(list(tensor.shape)),
+                        "Parameters": numel,
+                        "Mean": float(tensor.mean()),
+                        "Std": float(tensor.std()),
+                        "Sparsity (%)": float((tensor == 0).sum() / numel * 100) if numel > 0 else 0.0
+                    })
         
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Parameters", f"{total_params:,}")
@@ -42,14 +63,17 @@ if model_file is not None:
         c3.metric("Precision", "Float32")
         
         st.divider()
-        df = pd.DataFrame(layers_data)
-        st.dataframe(df, use_container_width=True)
-        
-        selected_layer = st.selectbox("Select Layer for Histogram:", df["Layer"])
-        if selected_layer:
-            tensor_vals = state_dict[selected_layer].cpu().numpy().flatten()
-            st.write(f"### Weight Distribution for `{selected_layer}`")
-            st.bar_chart(np.histogram(tensor_vals, bins=50)[0])
+        if layers_data:
+            df = pd.DataFrame(layers_data)
+            st.dataframe(df, use_container_width=True)
+            
+            selected_layer = st.selectbox("Select Layer for Histogram:", df["Layer"])
+            if selected_layer:
+                tensor_vals = state_dict[selected_layer].cpu().numpy().flatten()
+                st.write(f"### Weight Distribution for `{selected_layer}`")
+                st.bar_chart(np.histogram(tensor_vals, bins=50)[0])
+        else:
+            st.warning("No PyTorch tensors were found in the uploaded file.")
 
     # --- TAB 2: EVALUATION RESULTS ---
     with tab2:
