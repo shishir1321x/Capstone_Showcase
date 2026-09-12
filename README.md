@@ -2,11 +2,7 @@
 
 *Senior Design Project, Department of Electrical and Computer Engineering, North South University.*
 
-> Markdown conversion of `report_main.tex`. Citation keys are kept in pandoc syntax (`[@key]`) so they still resolve against `references.bib`. The two methodology diagrams are drawn in TikZ and exist only in the LaTeX source; their captions and numbering are preserved here.
 
----
-
-![logo](figures/north-south-university-logo-png_seeklogo-351576.png)
 
 **Department of Electrical and Computer Engineering**
 
